@@ -1451,7 +1451,7 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
                     mode="min",
                     factor=factor,
                     patience=self.config.scheduler_patience,
-                    verbose=VERBOSE_SCHEDULER,
+                    # verbose=VERBOSE_SCHEDULER,
                 )
                 if provided_scheduler is None
                 else provided_scheduler
