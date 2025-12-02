@@ -12,6 +12,7 @@ from napari_cellseg3d.code_models.instance_segmentation import InstanceMethod
 # from napari_cellseg3d.models import model_TRAILMAP as TRAILMAP
 from napari_cellseg3d.code_models.models.model_SegResNet import SegResNet_
 from napari_cellseg3d.code_models.models.model_SwinUNetR import SwinUNETR_
+from napari_cellseg3d.code_models.models.model_SwinUNetR_SwiGLU_ReLU2 import SwinUNETR_SwiGLU_ReLU2_
 from napari_cellseg3d.code_models.models.model_TRAILMAP_MS import TRAILMAP_MS_
 from napari_cellseg3d.code_models.models.model_VNet import VNet_
 from napari_cellseg3d.code_models.models.model_WNet import WNet_
@@ -26,6 +27,7 @@ MODEL_LIST = {
     "VNet": VNet_,
     "TRAILMAP_MS": TRAILMAP_MS_,
     "SwinUNetR": SwinUNETR_,
+    "SwinUNetR_SwiGLU_ReLU2": SwinUNETR_SwiGLU_ReLU2_,
     "WNet3D": WNet_,
     # "TRAILMAP": TRAILMAP,
     # "test" : DO NOT USE, reserved for testing
