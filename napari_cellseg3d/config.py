@@ -42,7 +42,6 @@ PRETRAINED_WEIGHTS_DIR = str(
 #     Review   #
 ################
 
-
 @dataclass
 class ReviewConfig:
     """Class to record params for Review plugin.
