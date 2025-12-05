@@ -81,6 +81,7 @@ class SwinUNETR_Mlp_LeakyReLU_(SwinUNETR):
         out_channels=1,
         input_img_size=(64, 64, 64),
         use_checkpoint=True,
+        feature_size=48,
         **kwargs,
     ):
         """Create a SwinUNetR model.
@@ -98,7 +99,7 @@ class SwinUNETR_Mlp_LeakyReLU_(SwinUNETR):
             in_channels=in_channels,
             out_channels=out_channels,
             use_checkpoint=use_checkpoint,
-            feature_size=48,
+            feature_size=feature_size,
             drop_rate=0.5,
             attn_drop_rate=0.5,
             use_v2=True,
@@ -128,6 +129,7 @@ class SwinUNETR_SwiGLU_LeakyReLU_(SwinUNETR):
         out_channels=1,
         input_img_size=(64, 64, 64),
         use_checkpoint=True,
+        feature_size=48,
         **kwargs,
     ):
         """Create a SwinUNetR model.
@@ -145,7 +147,7 @@ class SwinUNETR_SwiGLU_LeakyReLU_(SwinUNETR):
             in_channels=in_channels,
             out_channels=out_channels,
             use_checkpoint=use_checkpoint,
-            feature_size=48,
+            feature_size=feature_size,
             drop_rate=0.5,
             attn_drop_rate=0.5,
             use_v2=True,
@@ -177,6 +179,7 @@ class SwinUNETR_Mlp_ReLUSquared_(SwinUNETR):
         out_channels=1,
         input_img_size=(64, 64, 64),
         use_checkpoint=True,
+        feature_size=48,
         **kwargs,
     ):
         """Create a SwinUNetR model.
@@ -194,7 +197,7 @@ class SwinUNETR_Mlp_ReLUSquared_(SwinUNETR):
             in_channels=in_channels,
             out_channels=out_channels,
             use_checkpoint=use_checkpoint,
-            feature_size=48,
+            feature_size=feature_size,
             drop_rate=0.5,
             attn_drop_rate=0.5,
             use_v2=True,
@@ -226,6 +229,7 @@ class SwinUNETR_SwiGLU_ReLUSquared_(SwinUNETR):
         out_channels=1,
         input_img_size=(64, 64, 64),
         use_checkpoint=True,
+        feature_size=48,
         **kwargs,
     ):
         """Create a SwinUNetR model.
@@ -243,7 +247,7 @@ class SwinUNETR_SwiGLU_ReLUSquared_(SwinUNETR):
             in_channels=in_channels,
             out_channels=out_channels,
             use_checkpoint=use_checkpoint,
-            feature_size=48,
+            feature_size=feature_size,
             drop_rate=0.5,
             attn_drop_rate=0.5,
             use_v2=True,

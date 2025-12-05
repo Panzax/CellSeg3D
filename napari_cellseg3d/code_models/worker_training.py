@@ -42,6 +42,7 @@ from monai.transforms import (
     RandShiftIntensityd,
     RandSpatialCropSamplesd,
     SpatialPadd,
+    Zoomd,
 )
 from monai.utils import set_determinism
 
@@ -1150,6 +1151,7 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
         model_config = self.config.model_info
         weights_config = self.config.weights_info
         deterministic_config = self.config.deterministic_config
+        explicit_val_data = getattr(self.config, "val_data_dict", None)
 
         if self.config.device == "mps":
             from os import environ
@@ -1168,10 +1170,18 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
                             "A previous wandb run is still active. It will be stopped before starting a new one."
                         )
                         wandb.finish()
+                    name_kv = {
+                        "model_name": model_config.name,
+                        "training_type": "supervised",
+                        "feature_size": model_config.model_kwargs.get("feature_size", "base"),
+                        "depths": model_config.model_kwargs.get("depths", "base"),
+                        "training_time": utils.get_date_time(),
+                    }
+                    name = "_".join([f"{k}_{v}" for k, v in name_kv.items()])
                     wandb.init(
                         config=config_dict,
                         project="CellSeg3D",
-                        name=f"{model_config.name}_supervised_training - {utils.get_date_time()}",
+                        name=name,
                         tags=[f"{model_config.name}", "supervised"],
                         mode=self.wandb_config.mode,
                     )
@@ -1217,8 +1227,16 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
             size = self.config.sample_size if do_sampling else check
             PADDING = utils.get_padding_dim(size)
 
+            # Extra kwargs allow sweeping model size / architecture parameters
+            # (e.g. feature_size for SwinUNETR variants) without adding
+            # dedicated code paths per model.
+            model_extra_kwargs = getattr(model_config, "model_kwargs", None) or {}
             model = (
-                model_class(input_img_size=PADDING, use_checkpoint=True)
+                model_class(
+                    input_img_size=PADDING,
+                    use_checkpoint=True,
+                    **model_extra_kwargs,
+                )
                 if provided_model is None
                 else provided_model
             )
@@ -1232,23 +1250,35 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
             epoch_loss_values = []
             val_metric_values = []
 
-            if len(self.config.train_data_dict) > 1:
-                self.train_files, self.val_files = (
-                    self.config.train_data_dict[
-                        0 : int(
-                            len(self.config.train_data_dict)
-                            * self.config.training_percent
-                        )
-                    ],
-                    self.config.train_data_dict[
-                        int(
-                            len(self.config.train_data_dict)
-                            * self.config.training_percent
-                        ) :
-                    ],
-                )
+            if explicit_val_data is not None:
+                # Explicit train/val split provided by the user: use all
+                # entries in train_data_dict for training and val_data_dict
+                # for validation. This aligns with setups where train/val
+                # directories are managed outside the worker.
+                self.train_files = self.config.train_data_dict
+                self.val_files = explicit_val_data
             else:
-                self.train_files = self.val_files = self.config.train_data_dict
+                if len(self.config.train_data_dict) > 1:
+                    self.train_files, self.val_files = (
+                        self.config.train_data_dict[
+                            0 : int(
+                                len(self.config.train_data_dict)
+                                * self.config.training_percent
+                            )
+                        ],
+                        self.config.train_data_dict[
+                            int(
+                                len(self.config.train_data_dict)
+                                * self.config.training_percent
+                            ) :
+                        ],
+                    )
+                else:
+                    # Single-volume case: reuse the same volume for train+val,
+                    # preserving previous behavior.
+                    self.train_files = self.val_files = (
+                        self.config.train_data_dict
+                    )
                 msg = f"Only one image file was provided : {self.config.train_data_dict[0]['image']}.\n"
 
                 logger.debug(f"SAMPLING is {self.config.sampling}")
@@ -1301,10 +1331,24 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
 
             def get_patch_loader_func(num_samples):
                 """Returns a function that will be used to extract patches from the images."""
-                return Compose(
+                transform_list = [
+                    LoadImaged(keys=["image", "label"]),
+                    EnsureChannelFirstd(keys=["image", "label"]),
+                ]
+
+                # Optional downsampling of image+label before patch extraction
+                downsample_zoom = getattr(self.config, "downsample_zoom", None)
+                if downsample_zoom is not None:
+                    transform_list.append(
+                        Zoomd(
+                            keys=["image", "label"],
+                            zoom=downsample_zoom,
+                            mode=["trilinear", "nearest"],  # interp image, keep labels discrete
+                        )
+                    )
+
+                transform_list.extend(
                     [
-                        LoadImaged(keys=["image", "label"]),
-                        EnsureChannelFirstd(keys=["image", "label"]),
                         RandSpatialCropSamplesd(
                             keys=["image", "label"],
                             roi_size=(
@@ -1325,6 +1369,7 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
                         EnsureTyped(keys=["image"]),
                     ]
                 )
+                return Compose(transform_list)
 
             if do_sampling:
                 # if there is only one volume, split samples
@@ -1382,14 +1427,28 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
                     samples_per_image=num_val_samples,
                 )
             else:
-                load_whole_images = Compose(
-                    [
-                        LoadImaged(
+                load_whole_images_list = [
+                    LoadImaged(
+                        keys=["image", "label"],
+                        # image_only=True,
+                        # reader=WSIReader(backend="tifffile")
+                    ),
+                    EnsureChannelFirstd(keys=["image", "label"]),
+                ]
+
+                # Optional downsampling of whole volumes before padding/cache
+                downsample_zoom = getattr(self.config, "downsample_zoom", None)
+                if downsample_zoom is not None:
+                    load_whole_images_list.append(
+                        Zoomd(
                             keys=["image", "label"],
-                            # image_only=True,
-                            # reader=WSIReader(backend="tifffile")
-                        ),
-                        EnsureChannelFirstd(keys=["image", "label"]),
+                            zoom=downsample_zoom,
+                            mode=["trilinear", "nearest"],
+                        )
+                    )
+
+                load_whole_images_list.extend(
+                    [
                         Orientationd(keys=["image", "label"], axcodes="PLI"),
                         QuantileNormalizationd(keys=["image"]),
                         SpatialPadd(
@@ -1399,6 +1458,7 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
                         EnsureTyped(keys=["image", "label"]),
                     ]
                 )
+                load_whole_images = Compose(load_whole_images_list)
                 logger.debug("Cache dataset : train")
                 train_dataset = CacheDataset(
                     data=self.train_files,
@@ -1457,9 +1517,10 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
                 else provided_scheduler
             )
             dice_metric = DiceMetric(
-                include_background=False, reduction="mean", ignore_empty=False
+                include_background=False,
+                reduction="mean",
+                ignore_empty=False,
             )
-
             best_metric = -1
             best_metric_epoch = -1
 
@@ -1616,9 +1677,8 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
                 )
                 self.log("ETA: " + f"{eta:.2f}" + " minutes")
 
-                if (
-                    (epoch + 1) % self.config.validation_interval == 0
-                    or epoch + 1 == self.config.max_epochs
+                if (epoch + 1) % self.config.validation_interval == 0 or (
+                    epoch + 1 == self.config.max_epochs
                 ):
                     model.eval()
                     self.log("Performing validation...")

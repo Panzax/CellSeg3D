@@ -2,7 +2,7 @@
 import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import napari
 import numpy as np
@@ -102,6 +102,8 @@ class ModelInfo:
         name (str): name of the model
         model_input_size (Optional[List[int]]): input size of the model
         num_classes (int): number of classes for the model.
+        model_kwargs (Optional[Dict[str, Any]]): extra keyword arguments passed to
+            the model constructor (e.g. feature_size for SwinUNETR variants).
     """
 
     name: str = next(iter(MODEL_LIST))
@@ -109,6 +111,7 @@ class ModelInfo:
         List[int]
     ] = None  # only used by SegResNet and SwinUNETR
     num_classes: int = 2  # only used by WNets
+    model_kwargs: Dict[str, Any] = field(default_factory=dict)
 
     def get_model(self):
         """Return model from model list."""
@@ -325,6 +328,10 @@ class TrainingWorkerConfig:
         do_augmentation (bool): whether to do augmentation
         num_workers (int): number of workers
         train_data_dict (dict): dict of train data as {"image": np.array, "labels": np.array}
+        downsample_zoom (Optional[List[float]]): Optional downsampling factors [Z, Y, X] applied
+            before patch extraction/padding in supervised training. For example, [1.0, 0.5, 0.5]
+            keeps Z unchanged and downsamples Y and X by 2x. When None, no downsampling is applied.
+            Only used in supervised training workers.
     """
 
     # model params
@@ -345,6 +352,7 @@ class TrainingWorkerConfig:
     do_augmentation: bool = True
     num_workers: int = 4
     train_data_dict: dict = None
+    downsample_zoom: Optional[List[float]] = None
 
 
 @dataclass
@@ -360,7 +368,10 @@ class SupervisedTrainingWorkerConfig(TrainingWorkerConfig):
     model_info: ModelInfo = None
     loss_function: callable = None
     training_percent: float = 0.8
-
+    # Optional explicit validation set. When provided, the supervised training
+    # worker will use train_data_dict for training and this list for validation,
+    # instead of creating a split based on training_percent.
+    val_data_dict: Optional[List[dict]] = None
 
 @dataclass
 class WNetTrainingWorkerConfig(TrainingWorkerConfig):
