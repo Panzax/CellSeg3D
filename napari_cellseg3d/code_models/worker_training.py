@@ -1098,6 +1098,440 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
         # self.log("\n")
         # self.log("-" * 20)
 
+    def _run_validation_epoch(
+        self,
+        model,
+        validation_loader,
+        dice_metric,
+        device,
+        size,
+        epoch=0,
+        return_images=False,
+        loss_function=None,
+    ):
+        """Run validation on the validation dataset and compute Dice metric and loss.
+
+        Uses the exact same forward pass as training (model(inputs) on batches from
+        validation_loader) to ensure loss computation matches training exactly. The only
+        difference is that gradients are not computed/updated.
+
+        Args:
+            model: The model to evaluate
+            validation_loader: DataLoader for validation data (provides batches matching training format)
+            dice_metric: DiceMetric instance to accumulate results
+            device: Device to run inference on
+            size: Unused (kept for compatibility with training loop signature)
+            epoch: Epoch number (for logging)
+            return_images: Whether to return images_dict for visualization
+            loss_function: Optional loss function to compute validation loss on logits
+
+        Returns:
+            tuple: (dice_metric_value: float, avg_loss: float | None, batch_losses: list[float], images_dict: dict | None)
+                - dice_metric_value: Mean Dice metric across all batches
+                - avg_loss: Average loss across all batches (None if loss_function not provided)
+                - batch_losses: List of per-batch loss values for downstream statistics
+                - images_dict: Dictionary of images for visualization (None if return_images=False)
+        """
+        model.eval()
+        self.log("Performing validation...")
+        checkpoint_output = []
+        total_loss = 0.0
+        batch_losses = []
+        num_batches = 0
+
+        with torch.no_grad():
+            for val_data in validation_loader:
+                val_inputs, val_labels = (
+                    val_data["image"].to(device),
+                    val_data["label"].to(device),
+                )
+
+                if self.labels_not_semantic:
+                    val_labels = val_labels.clamp(0, 1)
+
+                # Use the same forward pass as training (direct model call on batches)
+                # This ensures loss computation matches training exactly, just without
+                # gradient updates. The validation_loader already provides the correct
+                # batch format (patches or whole volumes) matching training.
+                with torch.no_grad():
+                    val_outputs = model(val_inputs)
+
+                logger.debug(f"val_outputs shape : {val_outputs.shape}")
+
+                # Compute loss on raw logits (before post-processing)
+                if loss_function is not None:
+                    # Handle multi-channel outputs same way as training
+                    outputs_for_loss = val_outputs
+                    if outputs_for_loss.shape[1] > 1:
+                        outputs_for_loss = outputs_for_loss[
+                            :, 1:, :, :, :
+                        ]  # TODO(cyril): adapt if additional channels
+                        if len(outputs_for_loss.shape) < 4:
+                            outputs_for_loss = outputs_for_loss.unsqueeze(0)
+                    batch_loss = loss_function(outputs_for_loss, val_labels)
+                    batch_loss_value = batch_loss.detach().item()
+                    if WANDB_INSTALLED:
+                        wandb.log({"Validation/Batch Loss": batch_loss_value})
+                    total_loss += batch_loss_value
+                    batch_losses.append(batch_loss_value)
+                    num_batches += 1
+
+                # Post-process for Dice metric computation
+                pred = decollate_batch(val_outputs)
+                labs = decollate_batch(val_labels)
+                post_pred = Compose(
+                    [
+                        RemapTensor(new_max=1, new_min=0),
+                        Threshold(threshold=0.5),
+                        EnsureType(),
+                    ]
+                )
+                post_label = EnsureType()
+
+                output_raw = [
+                    RemapTensor(new_max=1, new_min=0)(t) for t in pred
+                ]
+
+                val_outputs = [
+                    post_pred(res_tensor) for res_tensor in pred
+                ]
+
+                val_labels = [
+                    post_label(res_tensor) for res_tensor in labs
+                ]
+
+                dice_metric(y_pred=val_outputs, y=val_labels)
+
+                if return_images:
+                    checkpoint_output.append(
+                        [
+                            output_raw[0].detach().cpu(),
+                            val_outputs[0].detach().cpu(),
+                            val_inputs[0].detach().cpu(),
+                            val_labels[0].detach().cpu(),
+                        ]
+                    )
+
+        metric = dice_metric.aggregate().detach().item()
+        avg_loss = total_loss / num_batches if num_batches > 0 else None
+
+        if WANDB_INSTALLED:
+            wandb.log({"Validation/Dice metric": metric})
+            if avg_loss is not None:
+                wandb.log({"Validation/Mean Loss (epoch)": avg_loss})
+
+        dice_metric.reset()
+
+        images_dict = None
+        if return_images and checkpoint_output:
+            checkpoint_output = [
+                item.numpy()
+                for channel in checkpoint_output
+                for item in channel
+            ]
+            checkpoint_output[3] = checkpoint_output[3].astype(np.uint16)
+
+            images_dict = {
+                "Validation output": {
+                    "data": checkpoint_output[0],
+                    "cmap": "turbo",
+                },
+                "Validation output (discrete)": {
+                    "data": checkpoint_output[1],
+                    "cmap": "bop blue",
+                },
+                "Validation image": {
+                    "data": checkpoint_output[2],
+                    "cmap": "inferno",
+                },
+                "Validation labels": {
+                    "data": checkpoint_output[3],
+                    "cmap": "green",
+                },
+            }
+
+        return metric, avg_loss, batch_losses, images_dict
+
+    def evaluate_only(self):
+        """Run evaluation-only mode: load model, run validation, return Dice metric and loss.
+
+        This method reuses the same setup logic as training but skips the training
+        loop entirely. It's designed for computing validation Dice metrics and losses
+        on checkpoints without any weight updates.
+
+        Returns:
+            tuple: (dice_metric_value: float, avg_loss: float | None, batch_losses: list[float])
+                - dice_metric_value: Mean Dice metric across all validation batches
+                - avg_loss: Average loss across all batches (None if loss_function not configured)
+                - batch_losses: List of per-batch loss values for downstream statistics (empty if loss_function not configured)
+        """
+        # Reuse the same setup logic from train() but skip optimizer/training loop
+        model_config = self.config.model_info
+        model_name = model_config.name
+        model_class = model_config.get_model()
+        weights_config = self.config.weights_info
+
+        if WANDB_INSTALLED:
+            config_dict = self.config.__dict__
+            logger.debug(f"wandb config : {config_dict}")
+            try:
+                if wandb.run is not None:
+                    logger.warning(
+                        "A previous wandb run is still active. It will be stopped before starting a new one."
+                    )
+                    wandb.finish()
+                name_kv = {
+                    "model_name": model_config.name,
+                    "training_type": "evaluation",
+                    "feature_size": model_config.model_kwargs.get("feature_size", "base"),
+                    "depths": model_config.model_kwargs.get("depths", "base"),
+                    "training_time": utils.get_date_time(),
+                }
+                name = "_".join([f"{k}_{v}" for k, v in name_kv.items()])
+                wandb.init(
+                    config=config_dict,
+                    project="CellSeg3D",
+                    name=name,
+                    tags=[f"{model_config.name}", "evaluation"],
+                    mode=self.wandb_config.mode,
+                )
+            except AttributeError:
+                logger.warning(
+                    "Could not initialize wandb."
+                    "This might be due to running napari in a folder where there is a directory named 'wandb'."
+                    "Aborting, please run napari in a different folder or install wandb. Sorry for the inconvenience."
+                )
+
+
+        # Check labels are semantic
+        check_labels = LoadImaged(keys=["label"])(
+            self.config.train_data_dict[0]
+        )
+        if check_labels["label"].max() > 1:
+            self.warn(
+                "Labels are not semantic, but instance. Converting to semantic, this might cause errors."
+            )
+            self.labels_not_semantic = True
+
+        # Determine size for model/validation
+        if not self.config.sampling:
+            data_check = LoadImaged(keys=["image"])(
+                self.config.train_data_dict[0]
+            )
+            check = data_check["image"].shape
+        do_sampling = self.config.sampling
+        size = self.config.sample_size if do_sampling else check
+        PADDING = utils.get_padding_dim(size)
+
+        # Instantiate model
+        model_extra_kwargs = getattr(model_config, "model_kwargs", None) or {}
+        model = model_class(
+            input_img_size=PADDING,
+            use_checkpoint=True,
+            **model_extra_kwargs,
+        )
+
+        device = torch.device(self.config.device)
+        model = model.to(device)
+
+        # Setup train/val split (same logic as train())
+        explicit_val_data = getattr(self.config, "val_data_dict", None)
+        if explicit_val_data is not None:
+            self.train_files = self.config.train_data_dict
+            self.val_files = explicit_val_data
+        else:
+            if len(self.config.train_data_dict) > 1:
+                self.train_files, self.val_files = (
+                    self.config.train_data_dict[
+                        0 : int(
+                            len(self.config.train_data_dict)
+                            * self.config.training_percent
+                        )
+                    ],
+                    self.config.train_data_dict[
+                        int(
+                            len(self.config.train_data_dict)
+                            * self.config.training_percent
+                        ) :
+                    ],
+                )
+            else:
+                self.train_files = self.val_files = (
+                    self.config.train_data_dict
+                )
+
+        if len(self.train_files) == 0:
+            raise ValueError("Training dataset is empty")
+        if len(self.val_files) == 0:
+            raise ValueError("Validation dataset is empty")
+
+        # Build validation transforms (no augmentation for eval)
+        val_transforms = Compose(
+            [
+                EnsureTyped(keys=["image", "label"]),
+            ]
+        )
+
+        # Build validation dataset (reuse same logic as train())
+        if do_sampling:
+            # Patch-based sampling
+            def get_patch_loader_func(num_samples):
+                transform_list = [
+                    LoadImaged(keys=["image", "label"]),
+                    EnsureChannelFirstd(keys=["image", "label"]),
+                ]
+
+                downsample_zoom = getattr(self.config, "downsample_zoom", None)
+                if downsample_zoom is not None:
+                    transform_list.append(
+                        Zoomd(
+                            keys=["image", "label"],
+                            zoom=downsample_zoom,
+                            mode=["trilinear", "nearest"],
+                        )
+                    )
+
+                transform_list.extend(
+                    [
+                        RandSpatialCropSamplesd(
+                            keys=["image", "label"],
+                            roi_size=self.config.sample_size,
+                            random_size=False,
+                            num_samples=num_samples,
+                        ),
+                        Orientationd(keys=["image", "label"], axcodes="PLI"),
+                        SpatialPadd(
+                            keys=["image", "label"],
+                            spatial_size=utils.get_padding_dim(
+                                self.config.sample_size
+                            ),
+                        ),
+                        QuantileNormalizationd(keys=["image"]),
+                        EnsureTyped(keys=["image"]),
+                    ]
+                )
+                return Compose(transform_list)
+
+            num_val_samples = self.config.num_samples
+            sample_loader_eval = get_patch_loader_func(num_val_samples)
+
+            validation_dataset = PatchDataset(
+                data=self.val_files,
+                transform=val_transforms,
+                patch_func=sample_loader_eval,
+                samples_per_image=num_val_samples,
+            )
+        else:
+            # Whole volume mode
+            load_whole_images_list = [
+                LoadImaged(keys=["image", "label"]),
+                EnsureChannelFirstd(keys=["image", "label"]),
+            ]
+
+            downsample_zoom = getattr(self.config, "downsample_zoom", None)
+            if downsample_zoom is not None:
+                load_whole_images_list.append(
+                    Zoomd(
+                        keys=["image", "label"],
+                        zoom=downsample_zoom,
+                        mode=["trilinear", "nearest"],
+                    )
+                )
+
+            load_whole_images_list.extend(
+                [
+                    Orientationd(keys=["image", "label"], axcodes="PLI"),
+                    QuantileNormalizationd(keys=["image"]),
+                    SpatialPadd(
+                        keys=["image", "label"],
+                        spatial_size=PADDING,
+                    ),
+                    EnsureTyped(keys=["image", "label"]),
+                ]
+            )
+            load_whole_images = Compose(load_whole_images_list)
+            validation_dataset = CacheDataset(
+                data=self.val_files, transform=load_whole_images
+            )
+
+        validation_loader = DataLoader(
+            validation_dataset,
+            batch_size=self.config.batch_size,
+            num_workers=self.config.num_workers,
+            collate_fn=pad_list_data_collate,
+        )
+
+        # Load weights
+        if weights_config.use_custom or weights_config.use_pretrained:
+            if weights_config.use_pretrained:
+                weights_file = model_class.weights_file
+                self.downloader.download_weights(model_name, weights_file)
+                weights = str(PRETRAINED_WEIGHTS_DIR / Path(weights_file))
+                weights_config.path = weights
+            elif weights_config.use_custom:
+                weights = str(Path(weights_config.path))
+
+            try:
+                model.load_state_dict(
+                    torch.load(weights, map_location=device),
+                    strict=True,
+                )
+                self.log(f"Loaded weights from: {weights}")
+            except RuntimeError as e:
+                logger.error(f"Error when loading weights : {e}")
+                logger.exception(e)
+                raise RuntimeError(
+                    f"Failed to load weights from {weights}: {e}"
+                ) from e
+
+        # Create Dice metric (same as training)
+        dice_metric = DiceMetric(
+            include_background=False,
+            reduction="mean",
+            ignore_empty=False,
+        )
+
+        # Set up loss function (same as training)
+        self._set_loss_from_config()
+        loss_function = self.loss_function
+
+        # Run validation
+        self.log("Running evaluation-only validation...")
+        dice_metric_value, loss_value, batch_losses, _ = (
+            self._run_validation_epoch(
+                model=model,
+                validation_loader=validation_loader,
+                dice_metric=dice_metric,
+                device=device,
+                size=size,
+                epoch=0,
+                return_images=False,
+                loss_function=loss_function,
+            )
+        )
+
+        # Log both metrics
+        self.log(f"Validation Dice score: {dice_metric_value:.4f}")
+        if loss_value is not None:
+            self.log(f"Validation Loss (average): {loss_value:.4f}")
+            if batch_losses:
+                self.log(
+                    f"  Per-batch losses: min={min(batch_losses):.4f}, "
+                    f"max={max(batch_losses):.4f}, "
+                    f"std={np.std(batch_losses):.4f}, "
+                    f"n_batches={len(batch_losses)}"
+                )
+
+        # Cleanup
+        model = None
+        del model
+        validation_loader = None
+        del validation_loader
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+        return dice_metric_value, loss_value, batch_losses
+
     def train(
         self,
         provided_model=None,
