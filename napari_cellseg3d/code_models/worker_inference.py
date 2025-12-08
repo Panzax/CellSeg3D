@@ -404,28 +404,35 @@ class InferenceWorker(GeneratorWorker):
                                     )
                         return result
                     ##########################################
-                    return post_process_transforms(result)
+                    return result
 
                 model.eval()
                 with torch.no_grad():
-                    ### Redirect tqdm pbar to logger
-                    old_stdout = sys.stderr
-                    sys.stderr = TqdmToLogSignal(self.log_w_replacement)
-                    ###
-                    outputs = sliding_window_inference(
-                        inputs,
-                        roi_size=window_size,
-                        sw_batch_size=1,  # TODO add param
-                        predictor=model_output_wrapper,
-                        sw_device=self.config.device,
-                        device=dataset_device,
-                        overlap=window_overlap,
-                        mode="gaussian",
-                        sigma_scale=0.01,
-                        progress=True,
-                    )
-                    ###
-                    sys.stderr = old_stdout
+                    if window_size is None:
+                        logger.debug(
+                            "Running full-volume inference without sliding window"
+                        )
+                        inputs_device = inputs.to(dataset_device)
+                        outputs = model_output_wrapper(inputs_device)
+                    else:
+                        # Redirect tqdm pbar to logger for sliding window mode.
+                        old_stdout = sys.stderr
+                        sys.stderr = TqdmToLogSignal(self.log_w_replacement)
+                        try:
+                            outputs = sliding_window_inference(
+                                inputs,
+                                roi_size=window_size,
+                                sw_batch_size=1,  # TODO add param
+                                predictor=model_output_wrapper,
+                                sw_device=self.config.device,
+                                device=dataset_device,
+                                overlap=window_overlap,
+                                mode="gaussian",
+                                sigma_scale=0.01,
+                                progress=True,
+                            )
+                        finally:
+                            sys.stderr = old_stdout
             except Exception as e:
                 logger.exception(e)
                 logger.debug("failed to run sliding window inference")
