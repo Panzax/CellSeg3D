@@ -979,6 +979,13 @@ class InferenceWorker(GeneratorWorker):
             is_folder = self.config.images_filepaths is not None
             is_layer = self.config.layer is not None
 
+            # Extra logging for CLI/debug usage
+            logger.info(
+                f"InferenceWorker: is_folder={is_folder}, "
+                f"is_layer={is_layer}, "
+                f"num_images={len(self.config.images_filepaths) if self.config.images_filepaths is not None else 0}"
+            )
+
             if is_layer and is_folder:
                 raise ValueError(
                     "Both a layer and a folder have been specified, please specify only one of the two. Aborting."
