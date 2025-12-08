@@ -2091,13 +2091,14 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
                     )
 
                 if WANDB_INSTALLED:
-                    wandb.log({"Training/Epoch loss": epoch_loss / step})
+                    wandb.log({"Training/Epoch loss": epoch_loss / step}, step=epoch)
                     wandb.log(
                         {
                             "LR/Model learning rate": optimizer.param_groups[
                                 0
                             ]["lr"]
-                        }
+                        },
+                        step=epoch,
                     )
 
                 epoch_loss /= step
