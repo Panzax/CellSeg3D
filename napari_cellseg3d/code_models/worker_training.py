@@ -2111,7 +2111,6 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
                     f"Current learning rate: {optimizer.param_groups[0]['lr']}"
                 )
 
-                checkpoint_output = []
                 eta = (
                     (time.time() - start_time)
                     * (self.config.max_epochs / (epoch + 1) - 1)
