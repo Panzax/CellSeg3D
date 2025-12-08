@@ -297,16 +297,51 @@ def remap_image(
     new_min=0,
     prev_max=None,
     prev_min=None,
+    min_quantile: float | None = None,
 ):
     """Normalizes a numpy array or Tensor using the max and min value."""
     shape = image.shape
-    image = image.flatten()
-    im_max = prev_max if prev_max is not None else image.max()
-    im_min = prev_min if prev_min is not None else image.min()
+    is_torch = isinstance(image, torch.Tensor)
+
+    if is_torch:
+        flat = image.flatten()
+        im_max = prev_max if prev_max is not None else flat.max()
+        if min_quantile is not None and prev_min is None:
+            # Use a lower quantile as the effective minimum so that
+            # background-like values are mapped to 0 after remapping.
+            q_min = np.quantile(
+                flat.detach().cpu().numpy(),
+                min_quantile,
+            )
+            im_min = q_min
+        else:
+            im_min = prev_min if prev_min is not None else flat.min()
+
+        # Avoid division by zero in pathological constant-tensor cases.
+        if float(im_max - im_min) == 0.0:
+            return torch.full_like(image, float(new_min))
+
+        image = torch.clamp(image, min=float(im_min), max=float(im_max))
+        image = (image - im_min) / (im_max - im_min)
+        image = image * (new_max - new_min) + new_min
+        return image.reshape(shape)
+
+    # Numpy path
+    flat = image.flatten()
+    im_max = prev_max if prev_max is not None else flat.max()
+    if min_quantile is not None and prev_min is None:
+        q_min = np.quantile(flat, min_quantile)
+        im_min = q_min
+    else:
+        im_min = prev_min if prev_min is not None else flat.min()
+
+    if float(im_max - im_min) == 0.0:
+        return np.full_like(image, float(new_min))
+
+    image = np.clip(image, im_min, im_max)
     image = (image - im_min) / (im_max - im_min)
     image = image * (new_max - new_min) + new_min
-    image = image.reshape(shape)
-    return image
+    return image.reshape(shape)
 
 
 def resize(image, zoom_factors):

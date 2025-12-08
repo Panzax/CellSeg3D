@@ -243,20 +243,30 @@ class QuantileNormalization(Transform):
 class RemapTensor(Transform):
     """Remap the values of a tensor to a new range."""
 
-    def __init__(self, new_max, new_min):
+    def __init__(self, new_max, new_min, min_quantile: float | None = None):
         """Creates a RemapTensor transform.
 
         Args:
             new_max (float): new maximum value
             new_min (float): new minimum value
+            min_quantile (Optional[float]): optional lower quantile in [0, 1]
+                to use as the effective minimum when remapping. This helps
+                avoid stretching pure-background regions when normalizing
+                model outputs.
         """
         super().__init__()
         self.max = new_max
         self.min = new_min
+        self.min_quantile = min_quantile
 
     def __call__(self, img):
         """Remap the values of a tensor to a new range."""
-        return utils.remap_image(img, new_max=self.max, new_min=self.min)
+        return utils.remap_image(
+            img,
+            new_max=self.max,
+            new_min=self.min,
+            min_quantile=self.min_quantile,
+        )
 
 
 # class RemapTensord(MapTransform):

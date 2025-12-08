@@ -953,7 +953,11 @@ class InferenceWorker(GeneratorWorker):
             if not post_process_config.thresholding.enabled:
                 post_process_transforms = Compose(
                     [
-                        RemapTensor(new_max=1.0, new_min=0.0),
+                        RemapTensor(
+                            new_max=1.0,
+                            new_min=0.0,
+                            min_quantile=0.1,
+                        ),
                         EnsureType(),
                     ]
                 )
@@ -961,7 +965,11 @@ class InferenceWorker(GeneratorWorker):
                 t = post_process_config.thresholding.threshold_value
                 post_process_transforms = Compose(
                     [
-                        RemapTensor(new_max=1.0, new_min=0.0),
+                        RemapTensor(
+                            new_max=1.0,
+                            new_min=0.0,
+                            min_quantile=0.1,
+                        ),
                         # AsDiscrete(threshold=t),
                         Threshold(threshold=t),
                         EnsureType(),
