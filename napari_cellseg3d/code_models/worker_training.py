@@ -2007,6 +2007,13 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
             #     self.quit()
             #     yield TrainingReport(False)
 
+            # Save a single checkpoint at roughly half of training.
+            # Using integer division on (max_epochs + 1) keeps the point near the middle
+            # while remaining stable for both even and odd epoch counts.
+            quarter_epoch = max(1, (self.config.max_epochs + 1) // 4)
+            mid_epoch = max(1, (self.config.max_epochs + 1) // 2)
+            three_quarters_epoch = max(1, (self.config.max_epochs + 1) // 4 * 3)
+
             for epoch in range(self.config.max_epochs):
                 # self.log("\n")
                 self.log("-" * 10)
