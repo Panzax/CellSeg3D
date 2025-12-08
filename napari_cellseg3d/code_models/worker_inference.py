@@ -871,8 +871,15 @@ class InferenceWorker(GeneratorWorker):
                 model = ONNXModelWrapper(weights_config.path)
             else:  # assume is .pth
                 self.log("Instantiating model...")
+                # Extra kwargs allow sweeping model size / architecture parameters
+                # (e.g. feature_size / depths for SwinUNETR variants) without
+                # adding dedicated code paths per model.
+                model_extra_kwargs = (
+                    getattr(self.config.model_info, "model_kwargs", None) or {}
+                )
                 model = model_class(
                     input_img_size=[dims, dims, dims],
+                    **model_extra_kwargs,
                     # device=self.config.device,
                     # num_classes=self.config.model_info.num_classes,
                 )
