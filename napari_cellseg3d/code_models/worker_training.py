@@ -2119,158 +2119,74 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
                 self.log("ETA: " + f"{eta:.2f}" + " minutes")
 
                 if (epoch + 1) % self.config.validation_interval == 0 or (
-                    epoch + 1 == self.config.max_epochs
+                    epoch + 1 == self.config.max_epochs or
+                    epoch + 1 == quarter_epoch or
+                    epoch + 1 == mid_epoch or
+                    epoch + 1 == three_quarters_epoch
                 ):
-                    model.eval()
-                    self.log("Performing validation...")
-                    with torch.no_grad():
-                        for val_data in validation_loader:
-                            val_inputs, val_labels = (
-                                val_data["image"].to(device),
-                                val_data["label"].to(device),
-                            )
-
-                            try:
-                                with torch.no_grad():
-                                    val_outputs = sliding_window_inference(
-                                        val_inputs,
-                                        roi_size=size,
-                                        sw_batch_size=self.config.batch_size,
-                                        predictor=model,
-                                        overlap=0.25,
-                                        mode="gaussian",
-                                        sigma_scale=0.01,
-                                        sw_device=self.config.device,
-                                        device=self.config.device,
-                                        progress=False,
-                                    )
-                            except Exception as e:
-                                self.raise_error(e, "Error during validation")
-
-                            logger.debug(
-                                f"val_outputs shape : {val_outputs.shape}"
-                            )
-                            # val_outputs = model(val_inputs)
-
-                            pred = decollate_batch(val_outputs)
-                            labs = decollate_batch(val_labels)
-                            # TODO : more parameters/flexibility
-                            post_pred = Compose(
-                                [
-                                    RemapTensor(new_max=1, new_min=0),
-                                    Threshold(threshold=0.5),
-                                    EnsureType(),
-                                ]
-                            )  #
-                            post_label = EnsureType()
-
-                            output_raw = [
-                                RemapTensor(new_max=1, new_min=0)(t)
-                                for t in pred
-                            ]
-                            # output_raw = pred
-
-                            val_outputs = [
-                                post_pred(res_tensor) for res_tensor in pred
-                            ]
-
-                            val_labels = [
-                                post_label(res_tensor) for res_tensor in labs
-                            ]
-
-                            # logger.debug(len(val_outputs))
-                            # logger.debug(len(val_labels))
-                            # dice_test = np.array(
-                            #     [
-                            #         utils.dice_coeff(i, j)
-                            #         for i, j in zip(val_outputs, val_labels)
-                            #     ]
-                            # )
-                            # logger.debug(
-                            #     f"TEST VALIDATION Dice score : {dice_test.mean()}"
-                            # )
-
-                            dice_metric(y_pred=val_outputs, y=val_labels)
-
-                        checkpoint_output.append(
-                            [
-                                output_raw[0].detach().cpu(),
-                                val_outputs[0].detach().cpu(),
-                                val_inputs[0].detach().cpu(),
-                                val_labels[0].detach().cpu(),
-                            ]
-                        )
-                        checkpoint_output = [
-                            item.numpy()
-                            for channel in checkpoint_output
-                            for item in channel
-                        ]
-                        checkpoint_output[3] = checkpoint_output[3].astype(
-                            np.uint16
-                        )
-
-                        metric = dice_metric.aggregate().detach().item()
-
-                        if WANDB_INSTALLED:
-                            wandb.log({"Validation/Dice metric": metric})
-
-                        dice_metric.reset()
-                        val_metric_values.append(metric)
-
-                        images_dict = {
-                            "Validation output": {
-                                "data": checkpoint_output[0],
-                                "cmap": "turbo",
-                            },
-                            "Validation output (discrete)": {
-                                "data": checkpoint_output[1],
-                                "cmap": "bop blue",
-                            },
-                            "Validation image": {
-                                "data": checkpoint_output[2],
-                                "cmap": "inferno",
-                            },
-                            "Validation labels": {
-                                "data": checkpoint_output[3],
-                                "cmap": "green",
-                            },
-                        }
-
-                        train_report = TrainingReport(
-                            show_plot=True,
+                    metric, val_loss, batch_losses, images_dict = (
+                        self._run_validation_epoch(
+                            model=model,
+                            validation_loader=validation_loader,
+                            dice_metric=dice_metric,
+                            device=device,
+                            size=size,
                             epoch=epoch,
-                            loss_1_values={"Loss": epoch_loss_values},
-                            loss_2_values=val_metric_values,
-                            weights=model.state_dict(),
-                            images_dict=images_dict,
-                            supervised=True,
+                            return_images=True,
+                            loss_function=self.loss_function,
                         )
-                        self.log("Validation completed")
-                        yield train_report
-
-                        weights_filename = (
-                            f"{model_name}_best_metric"
-                            # + f"_epoch_{epoch + 1}" # avoid saving per epoch
-                            + ".pth"
-                        )
-
-                        if metric > best_metric:
-                            best_metric = metric
-                            best_metric_epoch = epoch + 1
-                            self.log("Saving best metric model")
-                            torch.save(
-                                model.state_dict(),
-                                Path(self.config.results_path_folder)
-                                / Path(
-                                    weights_filename,
-                                ),
+                    )
+                    val_metric_values.append(metric)
+                    if val_loss is not None:
+                        self.log(f"Validation loss: {val_loss:.4f}")
+                        if batch_losses:
+                            self.log(
+                                f"  Per-batch losses: min={min(batch_losses):.4f}, "
+                                f"max={max(batch_losses):.4f}, "
+                                f"std={np.std(batch_losses):.4f}"
                             )
-                            self.log("Saving complete")
-                        self.log(
-                            f"Current epoch: {epoch + 1}, Current mean dice: {metric:.4f}"
-                            f"\nBest mean dice: {best_metric:.4f} "
-                            f"at epoch: {best_metric_epoch}"
+
+                    train_report = TrainingReport(
+                        show_plot=True,
+                        epoch=epoch,
+                        loss_1_values={"Loss": epoch_loss_values},
+                        loss_2_values=val_metric_values,
+                        weights=model.state_dict(),
+                        images_dict=images_dict,
+                        supervised=True,
+                    )
+                    self.log("Validation completed")
+                    yield train_report
+
+                    weights_filename = (
+                        f"{model_name}_best_metric"
+                        # + f"_epoch_{epoch + 1}" # avoid saving per epoch
+                        + ".pth"
+                    )
+
+                    if metric > best_metric:
+                        best_metric = metric
+                        best_metric_epoch = epoch + 1
+                        self.log("Saving best metric model")
+                        torch.save(
+                            model.state_dict(),
+                            Path(self.config.results_path_folder)
+                            / Path(
+                                weights_filename,
+                            ),
                         )
+                        self.log("Saving complete")
+                    self.log(
+                        f"Current epoch: {epoch + 1}, Current mean dice: {metric:.4f}"
+                        f"\nBest mean dice: {best_metric:.4f} "
+                        f"at epoch: {best_metric_epoch}"
+                    )
+
+                if epoch + 1 in [quarter_epoch, mid_epoch, three_quarters_epoch]:
+                    filename = f"{model_name}_midtraining_epoch_{epoch + 1}.pth"
+                    self.log(f"Saving mid-training model checkpoint at epoch {epoch + 1}")
+                    torch.save(model.state_dict(), Path(self.config.results_path_folder) / Path(filename))
+                    self.log("Mid-training checkpoint saving complete")
             self.log("=" * 10)
             self.log(
                 f"Train completed, best_metric: {best_metric:.4f} "
