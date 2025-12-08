@@ -370,10 +370,17 @@ class InferenceWorker(GeneratorWorker):
                     result = model(inputs)
 
                     ####################### EXPERIMENTAL CODE
+                    # NOTE: we now apply post_process_transforms *after*
+                    # sliding_window_inference on the stitched volume to
+                    # avoid per-window min-max normalization / thresholding
+                    # artifacts. For the experimental auto-discard logic we
+                    # still normalize a local copy here, but we return the
+                    # raw model outputs so downstream post-processing remains
+                    # consistent.
                     if EXPERIMENTAL_AUTO_DISCARD_EMPTY_REGIONS:
-                        result = post_process_transforms(result)
+                        processed = post_process_transforms(result)
                         logger.debug("Checking for empty regions")
-                        check_result = result.detach().cpu().numpy()
+                        check_result = processed.detach().cpu().numpy()
                         for i in range(check_result.shape[0]):
                             for j in range(check_result.shape[1]):
                                 fraction_labeled = (
@@ -427,6 +434,7 @@ class InferenceWorker(GeneratorWorker):
             logger.debug(f"Inference output shape: {outputs.shape}")
 
             self.log("Post-processing...")
+            outputs = post_process_transforms(outputs)
             out = outputs.detach().cpu().numpy()
             if aniso_transform is not None:
                 out = aniso_transform(out)
