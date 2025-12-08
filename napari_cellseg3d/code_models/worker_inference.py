@@ -908,7 +908,7 @@ class InferenceWorker(GeneratorWorker):
                             weights,
                             map_location=self.config.device,
                         ),
-                        strict=False,  # True, # TODO(cyril): change to True
+                        strict=True,  # True, # TODO(cyril): change to True
                     )
                     self.log(f"Weights status : {missing}")
                 except Exception as e:
