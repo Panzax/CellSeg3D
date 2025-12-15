@@ -1221,7 +1221,7 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
             wandb.log({"Validation/Dice metric": metric})
             if avg_loss is not None:
                 wandb.log({"Validation/Mean Loss (epoch)": avg_loss})
-                noko.log_row("Validation/Mean Loss (epoch)", {"value": avg_loss})
+        noko.log_row("Validation/Mean Loss (epoch)", {"value": avg_loss})
 
         dice_metric.reset()
 
@@ -2096,7 +2096,6 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
 
                 if WANDB_INSTALLED:
                     wandb.log({"Training/Epoch loss": epoch_loss / step}, step=epoch)
-                    noko.log_row("Training/Epoch loss", {"value": epoch_loss / step}, step=epoch)
                     wandb.log(
                         {
                             "LR/Model learning rate": optimizer.param_groups[
@@ -2105,7 +2104,8 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
                         },
                         step=epoch,
                     )
-                    noko.log_row("LR/Model learning rate", {"value": optimizer.param_groups[0]["lr"]}, step=epoch)
+                noko.log_row("Training/Epoch loss", {"value": epoch_loss / step}, step=epoch)
+                noko.log_row("LR/Model learning rate", {"value": optimizer.param_groups[0]["lr"]}, step=epoch)
 
                 epoch_loss /= step
                 epoch_loss_values.append(epoch_loss)
@@ -2201,9 +2201,9 @@ class SupervisedTrainingWorker(TrainingWorkerBase):
 
             if WANDB_INSTALLED:
                 wandb.log({"Validation/Best metric": best_metric})
-                noko.log_row("Validation/Best metric", {"value": best_metric})
                 wandb.log({"Validation/Best metric epoch": best_metric_epoch})
-                noko.log_row("Validation/Best metric epoch", {"value": best_metric_epoch})
+            noko.log_row("Validation/Best metric", {"value": best_metric})
+            noko.log_row("Validation/Best metric epoch", {"value": best_metric_epoch})
 
             # Save last checkpoint
             weights_filename = f"{model_name}_latest.pth"
